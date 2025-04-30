@@ -7,6 +7,7 @@
 
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
+#define ROOT_DIR "/home/ouymq/catkin_ws/src/faster-lio/"
 
 #include <Eigen/Core>
 #include <Eigen/Dense>
