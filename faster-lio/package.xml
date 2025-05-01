@@ -1,5 +1,7 @@
 <?xml version="1.0"?>
-<package>
+<package >
+
+
     <name>faster_lio</name>
     <version>0.0.0</version>
 
@@ -14,7 +16,8 @@
     <license>BSD</license>
 
     <author email="gao.xiang.thu@gmail.com">Gao Xiang</author>
-
+<build_depend>message_generation</build_depend>
+<run_depend>message_runtime</run_depend>
     <buildtool_depend>catkin</buildtool_depend>
     <build_depend>geometry_msgs</build_depend>
     <build_depend>nav_msgs</build_depend>

@@ -11,6 +11,9 @@
 #include <map>
 #include <numeric>
 #include <string>
+#include <vector>
+#include <sophus/so3.hpp>
+#include <Eigen/Dense>
 
 namespace faster_lio {
 
@@ -27,12 +30,6 @@ class Timer {
         std::vector<double> time_usage_in_ms_;
     };
 
-    /**
-     * call F and save its time usage
-     * @tparam F
-     * @param func
-     * @param func_name
-     */
     template <class F>
     static void Evaluate(F&& func, const std::string& func_name) {
         auto t1 = std::chrono::high_resolution_clock::now();
@@ -47,7 +44,6 @@ class Timer {
         }
     }
 
-    /// print the run time
     static void PrintAll() {
         LOG(INFO) << ">>> ===== Printing run time =====";
         for (const auto& r : records_) {
@@ -59,7 +55,6 @@ class Timer {
         LOG(INFO) << ">>> ===== Printing run time end =====";
     }
 
-    /// dump to a log file
     static void DumpIntoFile(const std::string& file_name) {
         std::ofstream ofs(file_name, std::ios::out);
         if (!ofs.is_open()) {
@@ -91,7 +86,6 @@ class Timer {
         ofs.close();
     }
 
-    /// get the average time usage of a function
     static double GetMeanTime(const std::string& func_name) {
         if (records_.find(func_name) == records_.end()) {
             return 0.0;
@@ -102,13 +96,21 @@ class Timer {
                double(r.time_usage_in_ms_.size());
     }
 
-    /// clean the records
     static void Clear() { records_.clear(); }
 
    private:
     static std::map<std::string, TimerRecord> records_;
 };
 
+namespace common {
+
+/// 将 Eigen::Matrix3d 旋转矩阵转换为 Sophus::SO3d
+inline Sophus::SO3d RotMtoSO3d(const Eigen::Matrix3d& rot) {
+    return Sophus::SO3d(rot);
+}
+
+}  // namespace common
 }  // namespace faster_lio
 
 #endif  // FASTER_LIO_UTILS_H
+

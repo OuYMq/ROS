@@ -6,7 +6,26 @@
 #include "laser_mapping.h"
 #include "utils.h"
 #include "cloud_preprocess.h"
+#include <sophus/se3.hpp>
+
 namespace faster_lio {
+
+pcl::PointCloud<pcl::PointXYZI>::Ptr ConvertToXYZI(const pcl::PointCloud<PointType>::Ptr &input) {
+    auto output = boost::make_shared<pcl::PointCloud<pcl::PointXYZI>>();
+    output->points.reserve(input->points.size());
+    for (const auto &pt : input->points) {
+        pcl::PointXYZI pt_out;
+        pt_out.x = pt.x;
+        pt_out.y = pt.y;
+        pt_out.z = pt.z;
+        pt_out.intensity = pt.intensity;
+        output->points.emplace_back(pt_out);
+    }
+    output->width = output->points.size();
+    output->height = 1;
+    output->is_dense = true;
+    return output;
+}
 
 bool LaserMapping::InitROS(ros::NodeHandle &nh) {
     LoadParams(nh);
@@ -21,6 +40,8 @@ bool LaserMapping::InitROS(ros::NodeHandle &nh) {
         get_f, df_dx, df_dw,
         [this](state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_data) { ObsModel(s, ekfom_data); },
         options::NUM_MAX_ITERATIONS, epsi.data());
+graph_optimizer_ = std::make_shared<GraphOptimizer>();
+loop_detector_ = std::make_shared<LoopDetector>();
 
     return true;
 }
@@ -178,6 +199,8 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
         acc_cov = yaml["mapping"]["acc_cov"].as<float>();
         b_gyr_cov = yaml["mapping"]["b_gyr_cov"].as<float>();
         b_acc_cov = yaml["mapping"]["b_acc_cov"].as<float>();
+        enable_g2o_optimization_ = yaml["mapping"]["enable_g2o_optimization"].as<bool>(true);
+
         preprocess_->Blind() = yaml["preprocess"]["blind"].as<double>();
         preprocess_->TimeScale() = yaml["preprocess"]["time_scale"].as<double>();
         lidar_type = yaml["preprocess"]["lidar_type"].as<int>();
@@ -247,8 +270,8 @@ void LaserMapping::SubAndPubToROS(ros::NodeHandle &nh) {
     nh.param<std::string>("common/imu_topic", imu_topic, "/livox/imu");
 
     if (preprocess_->GetLidarType() == LidarType::AVIA) {
-        sub_pcl_ = nh.subscribe<livox_ros_driver::CustomMsg>(
-            lidar_topic, 200000, [this](const livox_ros_driver::CustomMsg::ConstPtr &msg) { LivoxPCLCallBack(msg); });
+        sub_pcl_ = nh.subscribe<livox_ros_driver2::CustomMsg>(
+            lidar_topic, 200000, [this](const livox_ros_driver2::CustomMsg::ConstPtr &msg) { LivoxPCLCallBack(msg); });
     } else {
         sub_pcl_ = nh.subscribe<sensor_msgs::PointCloud2>(
             lidar_topic, 200000, [this](const sensor_msgs::PointCloud2::ConstPtr &msg) { StandardPCLCallBack(msg); });
@@ -328,7 +351,68 @@ void LaserMapping::Run() {
         "IEKF Solve and Update");
 
     // update local map
-    Timer::Evaluate([&, this]() { MapIncremental(); }, "    Incremental Mapping");
+    Timer::Evaluate([&, this]() { MapIncremental(); 
+    // 每隔5帧构建关键帧
+    if (enable_g2o_optimization_) {
+if (keyframe_id_ % 5 == 0) {
+    PoseGraphNode node;
+    node.id = keyframe_id_;
+    node.time = lidar_end_time_;  // 当前帧时间戳
+
+    // 使用当前滤波后的位姿
+    node.pose = Sophus::SE3d(Sophus::SO3d(state_point_.rot.toRotationMatrix()), state_point_.pos).matrix();
+
+    node.cloud = ConvertToXYZI(scan_down_body_);  // 当前帧的点云
+
+    // 添加顶点到g2o图中
+    graph_optimizer_->AddNode(node);
+
+    if (!keyframes_.empty()) {
+        Eigen::Isometry3d rel_pose = keyframes_.back().pose.inverse() * node.pose;
+        Eigen::Matrix<double, 6, 6> info = Eigen::Matrix<double, 6, 6>::Identity() * 100.0;
+        graph_optimizer_->AddEdge(keyframes_.back().id, node.id, rel_pose, info);
+    }
+
+    keyframes_.emplace_back(node);
+    loop_detector_->AddKeyframe(keyframe_id_, scan_down_body_);
+
+    // 回环检测并加边
+    int loop_id;
+    Eigen::Isometry3d loop_rel_pose;
+    if (loop_detector_->DetectLoop(keyframe_id_, scan_down_body_, loop_id, loop_rel_pose)) {
+        Eigen::Matrix<double, 6, 6> info = Eigen::Matrix<double, 6, 6>::Identity() * 50.0;
+        graph_optimizer_->AddEdge(loop_id, keyframe_id_, loop_rel_pose, info);
+        std::cout << "[Loop Closure] between " << loop_id << " and " << keyframe_id_ << std::endl;
+    }
+
+    // 每30帧执行一次图优化
+    if (keyframe_id_ % 30 == 0) {
+        graph_optimizer_->Optimize();
+        auto poses = graph_optimizer_->GetAllPoses();
+
+        // 可选：更新可视化轨迹 path_
+        path_.poses.clear();
+        path_.header.stamp = ros::Time::now();
+        path_.header.frame_id = tf_world_frame_;
+        for (const auto& pose : poses) {
+            geometry_msgs::PoseStamped pose_stamped;
+            pose_stamped.header = path_.header;
+            pose_stamped.pose.position.x = pose.translation().x();
+            pose_stamped.pose.position.y = pose.translation().y();
+            pose_stamped.pose.position.z = pose.translation().z();
+            Eigen::Quaterniond q(pose.rotation());
+            pose_stamped.pose.orientation.x = q.x();
+            pose_stamped.pose.orientation.y = q.y();
+            pose_stamped.pose.orientation.z = q.z();
+            pose_stamped.pose.orientation.w = q.w();
+            path_.poses.push_back(pose_stamped);
+        }
+    }
+
+    keyframe_id_++;
+}
+}
+    }, "    Incremental Mapping");
 
     LOG(INFO) << "[ mapping ]: In num: " << scan_undistort_->points.size() << " downsamp " << cur_pts
               << " Map grid num: " << ivox_->NumValidGrids() << " effect num : " << effect_feat_num_;
@@ -384,7 +468,7 @@ void LaserMapping::StandardPCLCallBack(const sensor_msgs::PointCloud2::ConstPtr 
     mtx_buffer_.unlock();
 }
 
-void LaserMapping::LivoxPCLCallBack(const livox_ros_driver::CustomMsg::ConstPtr &msg) {
+void LaserMapping::LivoxPCLCallBack(const livox_ros_driver2::CustomMsg::ConstPtr &msg) {
     mtx_buffer_.lock();
     Timer::Evaluate(
         [&, this]() {
