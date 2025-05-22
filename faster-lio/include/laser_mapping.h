@@ -1,7 +1,7 @@
 #ifndef FASTER_LIO_LASER_MAPPING_H
 #define FASTER_LIO_LASER_MAPPING_H
 
-#include <livox_ros_driver/CustomMsg.h>
+#include <livox_ros_driver2/CustomMsg.h>
 #include <nav_msgs/Path.h>
 #include <pcl/filters/voxel_grid.h>
 #include <ros/ros.h>
@@ -13,6 +13,10 @@
 #include "ivox3d/ivox3d.h"
 #include "options.h"
 #include "pointcloud_preprocess.h"
+
+#include "graph_optimization/graph_optimizer.h"
+#include "graph_optimization/loop_detector.h"
+#include "graph_optimization/pose_graph_node.h"
 
 namespace faster_lio {
 
@@ -44,7 +48,7 @@ class LaserMapping {
 
     // callbacks of lidar and imu
     void StandardPCLCallBack(const sensor_msgs::PointCloud2::ConstPtr &msg);
-    void LivoxPCLCallBack(const livox_ros_driver::CustomMsg::ConstPtr &msg);
+    void LivoxPCLCallBack(const livox_ros_driver2::CustomMsg::ConstPtr &msg);
     void IMUCallBack(const sensor_msgs::Imu::ConstPtr &msg_in);
 
     // sync lidar with imu
@@ -92,6 +96,7 @@ class LaserMapping {
     double cube_len_ = 0;
     double filter_size_map_min_ = 0;
     bool localmap_initialized_ = false;
+bool enable_g2o_optimization_ = true;
 
     /// params
     std::vector<double> extrinT_{3, 0.0};  // lidar-imu translation
@@ -171,8 +176,15 @@ class LaserMapping {
     PointCloudType::Ptr pcl_wait_save_{new PointCloudType()};  // debug save
     nav_msgs::Path path_;
     geometry_msgs::PoseStamped msg_body_pose_;
+
+    ///////////////////////// graph optimization related //////////////////////////////////////////////////
+    std::shared_ptr<GraphOptimizer> graph_optimizer_;
+    std::shared_ptr<LoopDetector> loop_detector_;
+    std::deque<PoseGraphNode> keyframes_;
+    size_t keyframe_id_ = 0;
 };
 
 }  // namespace faster_lio
 
 #endif  // FASTER_LIO_LASER_MAPPING_H
+
